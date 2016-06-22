@@ -1,4 +1,4 @@
 # MonopolyBot
 discord monopoly bot i made in about 8 hours (not including bug testing)
 
-required discord.js
+requires discord.js and discoexpress
