@@ -1,7 +1,7 @@
 // main.js
 //http://richard_wilding.tripod.com/monorules.htm
 String.prototype.contains = function(text) {
-  return this.indexOf(text) != -1;
+  return this.toLowerCase().indexOf(text.toLowerCase()) != -1;
 }
 Array.prototype.contains = function(object) {
   return this.indexOf(object) != -1;
@@ -14,7 +14,7 @@ Array.prototype.remove = function(object) {
 var DiscoExpress = require('./index');
 var AuthDetails = require("./auth.json");
 var currentGame;
-var channelName = "bot-testing";
+var channelName = "monopoly";
 
 function setupDiscoExpress() {
   var app = new DiscoExpress();
@@ -50,7 +50,8 @@ function login(app) {
 }
 
 
-function Game() {
+function Game(owner) {
+  this.owner = owner;
   this.started = 0;
   this.players = [];
   this.properties = [];
@@ -157,14 +158,7 @@ Game.prototype.turn = function() {
   var roll2 = 1 + Math.floor(Math.random() * 6);
   if (roll1 == roll2) this.doubles++; else this.doubles = 0;
   this.roll = roll1 + roll2;
-
   var player = this.players[this.turnIndex];
-
-  if (this.doubles == 3) {
-    player.jail();
-    this.message = "you were jailed for rolling doubles 3 times in a row";
-    this.doubles = 0;
-  }
 
   // if the player is jailed
   if (player.jailed) {
@@ -180,19 +174,25 @@ Game.prototype.turn = function() {
       player.jailed = 0;
       player.move(roll);
     } else {
-      this.choiceData = new ChoiceData(`You are in jail, would you like to **1: pay $50**, **2: try to roll for doubles**${player.freeJailCard ? ",**3: use your __get out of jail free__ card**" : ""}?`, (res) => {
+      this.choiceData = new ChoiceData(`You are in jail, would you like to [1]: pay $50, [2]: try to roll for doubles${player.freeJailCard ? ", [3]: use your __get out of jail free__ card" : ""}?`, (res) => {
         if (res.contains("1")) {
           player.money -= 50;
           player.jailed = 0;
+          this.messages.push("you have been released from jail by paying the fee");
+          return 1;
         } else if (res.contains("2")) {
           if (this.doubles) {
             this.doubles = 0;
             player.jailed = 0;
-            this.message = "you have been released from jail by rolling doubles";
+            this.messages.push("you have been released from jail by rolling doubles");
           }
+          return 1;
+          this.messages.push("you did not roll doubles and are still in jail");
         } else if (res.contains("3") && player.freeJailCard) {
           player.freeJailCard = 0;
           player.jailed = 0;
+          this.messages.push("you have been released from jail by using your card");
+          return 1;
         }
       });
     }
@@ -201,26 +201,45 @@ Game.prototype.turn = function() {
     player.move(this.roll);
   }
 
+  if (this.doubles == 3) {
+    player.jail();
+    this.message = "you were jailed for rolling doubles 3 times in a row";
+    this.doubles = 0;
+  }
+
   // if the player has to make a choice, dont change the next player
   if (this.choiceData != null) return;
-  if (this.doubles) return;
+  if (this.doubles) return this.messages.push("you rolled doubles and so you get to roll again");
 
   // next player
   this.turnIndex++;
-  if (this.turnIndex = this.players.length) this.turnIndex = 0;
+  if (this.turnIndex == this.players.length) this.turnIndex = 0;
 }
 Game.prototype.onMessage = function(bot, msg) {
-  if (msg.channel == null) return;
+  if (msg.channel.name == null) return;
   if (msg.channel.name.toLowerCase() != channelName.toLowerCase()) return;
-
+  if (msg.content.contains("!restart")) {
+    bot.reply(msg, "restarting....");
+    console.log("restarting...")
+    setTimeout(() => {process.exit(0)}, 1000);
+  }
   if (!this.started) {
     if (msg.content.contains("!join")) {
-      this.players.push(new Player(msg.author));
-      bot.sendMessage(msg.channel, msg.author.name + " has joined the game");
+      var joined = 0;
+      this.players.forEach((p) => {
+        if (p.user == msg.author)
+        return joined = 1;
+      });
+      if (!joined) {
+        this.players.push(new Player(msg.author));
+        bot.sendMessage(msg.channel, msg.author.name + " has joined the game");
+      } else {
+        return bot.reply(msg, "you are already in the game");
+      }
     }
     if (msg.content.contains("!start")) {
       this.start();
-      bot.sendMessage(msg.channel, "the game has started!");
+      bot.sendMessage(msg.channel, "the game has started!" + "\nits " + this.players[0].user.mention() + "'s turn");
     }
     return;
   }
@@ -239,6 +258,17 @@ Game.prototype.onMessage = function(bot, msg) {
         return bot.reply(msg, "you currently own: " + p.list());
     });
     return;
+  }
+  if (msg.content.contains("!jackpot")) {
+    bot.reply(msg, "the current jackpot is $" + this.jackpot);
+    return;
+  }
+  if (msg.content.contains("!turn")) {
+    bot.reply(msg, "it is currently " + this.players[this.turnIndex].user.mention() + "'s turn");
+    return;
+  }
+  if (msg.content.contains("!help")) {
+    return bot.reply(msg, "how to play: when its your turn, you can !roll, !trade \nWhen it is not your turn you can use !money and !properties to view your stuff\nif you are in a trade you can do !add [money/property/card]");
   }
 
   if (this.tradeData) {
@@ -357,14 +387,14 @@ Game.prototype.onMessage = function(bot, msg) {
   }
 
   if (msg.author != this.players[this.turnIndex].user) return;
-  var player = this.players[this.turnIndex].user;
+  var player = this.players[this.turnIndex];
   if (!this.choiceData) {
     if (msg.content.contains("!roll")) {
       this.turn();
       if (this.choiceData) {
         this.messages.push(this.choiceData.message);
       } else {
-        this.messages.push("It is now " + this.players[this.turnIndex].user.name + "'s turn");
+        this.messages.push("It is now " + this.players[this.turnIndex].user.mention() + "'s turn");
       }
     } else if (msg.content.contains("!trade")) {
       player.trade();
@@ -376,8 +406,8 @@ Game.prototype.onMessage = function(bot, msg) {
       this.choiceData = null;
       // next player
       this.turnIndex++;
-      if (this.turnIndex = this.players.length) this.turnIndex = 0;
-      this.messages.push("It is now " + this.players[this.turnIndex].user.name + "'s turn");
+      if (this.turnIndex == this.players.length) this.turnIndex = 0;
+      this.messages.push("It is now " + this.players[this.turnIndex].user.mention() + "'s turn");
     }
   }
 
@@ -441,10 +471,10 @@ Player.prototype.list = function(purpose) {
   var ret = "";
   switch (purpose) {
     // TODO: add more things
-    case "mortgage":currentGame.properties.forEach((p) => {ret += `${p.getString()}, mortgage value: ${"$" + p.cost / 2}\n`;}); break;
-    case "value":   currentGame.properties.forEach((p) => {ret += `${p.getString()}, value: ${"$" + p.cost}\n`;}); break;
-    case "houses":  currentGame.properties.forEach((p) => {ret += `${p.getString()}, house cost: ${"$" + p.houseCost}\n`;}); break;
-    case undefined: currentGame.properties.forEach((p) => {ret += `${p.getString()}\n`;}); break;
+    case "mortgage":currentGame.properties.forEach((p) => {if (p.owner == this) ret += `${p.getString()}, mortgage value: ${"$" + p.cost / 2}\n`;}); break;
+    case "value":   currentGame.properties.forEach((p) => {if (p.owner == this) ret += `${p.getString()}, value: ${"$" + p.cost}\n`;}); break;
+    case "houses":  currentGame.properties.forEach((p) => {if (p.owner == this) ret += `${p.getString()}, house cost: ${"$" + p.houseCost}\n`;}); break;
+    case undefined: currentGame.properties.forEach((p) => {if (p.owner == this) ret += `${p.getString()}\n`;}); break;
   }
   return ret;
 }
@@ -620,7 +650,7 @@ Property.prototype.buyHouse = function() {
   }
 }
 Property.prototype.getString = function() {
-  return `[${p.index}]: ${p.name}${this.mortgaged?" (mortgaged)":""}`;
+  return `[${this.index}]: ${this.name}${this.mortgaged?" (mortgaged)":""}`;
 }
 
 
